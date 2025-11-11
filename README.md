@@ -1,5 +1,6 @@
-# Dying-Light-The-Beast-Resource-Pack-Extractor
-Dumps Dying Light The Beast RP6 files.
-
-# MSH tool
-Reads .MSH files, Produces .gltf
+# Tools for working with Dying Light The Beast Resources.
+## Dying Light (.rpack) extractor
+Dumps .DDS
+Dumps .MSH
+Dumps .ANM2
+and dumps other formats raw
