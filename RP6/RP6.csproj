@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Folder Include="Format\ResourceDataPack\"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Mesh\Mesh.csproj" />
+        <ProjectReference Include="..\Utils\Utils.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Ecng.Lzma" Version="1.0.63"/>
+        <PackageReference Include="Iconic.Zlib.Netstandard" Version="1.0.0"/>
+    </ItemGroup>
+
+</Project>

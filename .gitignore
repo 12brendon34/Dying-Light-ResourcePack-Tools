@@ -53,5 +53,5 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 
-#Binary Template and Scripts
-bt_reference/
+# User Settings
+ChromEd_BTools.sln.DotSettings.user
