@@ -354,12 +354,6 @@ static class ResourceWriter
             reader0.BaseStream.Position = (long)n.m_Name;
             var nodeName = reader0.ReadTerminatedString();
             
-            //remove later, not possible if read properly
-            if (nodeName.Length > 64)
-            {
-                Console.WriteLine($"[ERROR] Node {nodeName} of size {nodeName.Length} is > 64");
-            }
-            
             var mshTree = new MshTree
             {
                 Node = new MshNode
