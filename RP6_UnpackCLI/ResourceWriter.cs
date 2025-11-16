@@ -6,6 +6,7 @@ using RP6.Format;
 using RP6.Format.CompactMesh;
 using RP6.Format.ResourceDataPack;
 using Utils.IO.Extensions;
+using SixLabors.ImageSharp; //rider is trolling me
 using SixLabors.ImageSharp.Textures.Formats.Dds;
 using SixLabors.ImageSharp.Textures.TextureFormats;
 using Configuration = SixLabors.ImageSharp.Textures.Configuration;
@@ -237,6 +238,7 @@ static class ResourceWriter
         if (info.BaseName.EndsWith(".png", StringComparison.OrdinalIgnoreCase) && Options.Current.EnablePngFixup)
         {
             stream.Position = 0;
+            
             var ddsDecoder = new DdsDecoder();
             var texture = ddsDecoder.DecodeTexture(Configuration.Default, stream);
             
