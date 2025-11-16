@@ -7,6 +7,9 @@ abstract class Program
 {
     private static int Main(string[] args)
     {
+        var iniPath = Path.Combine(AppContext.BaseDirectory, "options.ini");
+        Options.LoadOrCreate(iniPath);
+
         if (args.Length is < 1 or > 2)
         {
             Console.WriteLine("Usage: {0} input_file.rpack [output_dir]", AppDomain.CurrentDomain.FriendlyName);

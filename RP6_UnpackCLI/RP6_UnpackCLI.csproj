@@ -12,4 +12,9 @@
         <ProjectReference Include="..\RP6\RP6.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+      <PackageReference Include="SixLabors.ImageSharp" Version="1.0.4" />
+      <PackageReference Include="SixLabors.ImageSharp.Textures" Version="0.0.0-alpha.0.132" />
+    </ItemGroup>
+
 </Project>

@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Numerics;
-using System.Runtime.InteropServices;
 using Mesh.Format;
 using Mesh.IO;
 using RP6;
@@ -8,6 +6,9 @@ using RP6.Format;
 using RP6.Format.CompactMesh;
 using RP6.Format.ResourceDataPack;
 using Utils.IO.Extensions;
+using SixLabors.ImageSharp.Textures.Formats.Dds;
+using SixLabors.ImageSharp.Textures.TextureFormats;
+using Configuration = SixLabors.ImageSharp.Textures.Configuration;
 
 namespace RP6_UnpackCLI;
 
@@ -25,7 +26,7 @@ static class ResourceWriter
 
     public static void WriteResource(ResourceInfo info)
     {
-        if (Handlers.TryGetValue(info.FileType, out var handler))
+        if (Handlers.TryGetValue(info.FileType, out var handler) && !Options.Current.EnableRawDumping)
             try
             {
                 handler(info);
@@ -69,10 +70,7 @@ static class ResourceWriter
             Console.Error.WriteLine($"[WARN] Texture {info.BaseName} does not have enough parts.");
             return;
         }
-
-        var outputFile = Path.Combine(info.OutputDir, info.BaseName + ".dds");
-        // = FileHelpers.MakeUniqueFilename(outputFile);
-
+        
         using var reader = new BinaryReader(new MemoryStream(info.Parts[0]));
         var textureHeader = reader.ReadStruct<RTextureInfo>();
 
@@ -184,55 +182,86 @@ static class ResourceWriter
             Debug.WriteLine($"[INFO] Texture {info.BaseName}, with textureHeader.Format of {textureHeader.Format} supports only DX9.");
         }
 
-        using var output = File.OpenWrite(outputFile);
-        using var outputWriter = new BinaryWriter(output);
-
-
+        using var stream = new MemoryStream();
+        //using var output = File.OpenWrite(outputFile);
+        using var writer = new BinaryWriter(stream);
+        
         // write magic
-        outputWriter.Write(DDS_MAGIC);
+        writer.Write(DDS_MAGIC);
 
         // write header
-        outputWriter.Write(header.Size);
-        outputWriter.Write(header.Flags);
-        outputWriter.Write(header.Height);
-        outputWriter.Write(header.Width);
-        outputWriter.Write(header.PitchOrLinearSize);
-        outputWriter.Write(header.Depth);
-        outputWriter.Write(header.MipMapCount);
+        writer.Write(header.Size);
+        writer.Write(header.Flags);
+        writer.Write(header.Height);
+        writer.Write(header.Width);
+        writer.Write(header.PitchOrLinearSize);
+        writer.Write(header.Depth);
+        writer.Write(header.MipMapCount);
 
         foreach (var v in header.Reserved1)
-            outputWriter.Write(v);
+            writer.Write(v);
 
         // pixel format
-        outputWriter.Write(header.PixelFormat.Size);
-        outputWriter.Write(header.PixelFormat.Flags);
-        outputWriter.Write(header.PixelFormat.FourCC);
-        outputWriter.Write(header.PixelFormat.RGBBitCount);
-        outputWriter.Write(header.PixelFormat.RBitMask);
-        outputWriter.Write(header.PixelFormat.GBitMask);
-        outputWriter.Write(header.PixelFormat.BBitMask);
-        outputWriter.Write(header.PixelFormat.ABitMask);
+        writer.Write(header.PixelFormat.Size);
+        writer.Write(header.PixelFormat.Flags);
+        writer.Write(header.PixelFormat.FourCC);
+        writer.Write(header.PixelFormat.RGBBitCount);
+        writer.Write(header.PixelFormat.RBitMask);
+        writer.Write(header.PixelFormat.GBitMask);
+        writer.Write(header.PixelFormat.BBitMask);
+        writer.Write(header.PixelFormat.ABitMask);
 
         // caps
-        outputWriter.Write(header.Caps);
-        outputWriter.Write(header.Caps2);
-        outputWriter.Write(header.Caps3);
-        outputWriter.Write(header.Caps4);
-        outputWriter.Write(header.Reserved2);
+        writer.Write(header.Caps);
+        writer.Write(header.Caps2);
+        writer.Write(header.Caps3);
+        writer.Write(header.Caps4);
+        writer.Write(header.Reserved2);
 
         // optional DX10
         if (header.PixelFormat.FourCC == DDS.MakeFourCC("DX10"))
         {
-            outputWriter.Write((uint)dx10Header.DxgiFormat);
-            outputWriter.Write((uint)dx10Header.ResourceDimension);
-            outputWriter.Write(dx10Header.MiscFlag);
-            outputWriter.Write(dx10Header.ArraySize);
-            outputWriter.Write(dx10Header.MiscFlags2);
+            writer.Write((uint)dx10Header.DxgiFormat);
+            writer.Write((uint)dx10Header.ResourceDimension);
+            writer.Write(dx10Header.MiscFlag);
+            writer.Write(dx10Header.ArraySize);
+            writer.Write(dx10Header.MiscFlags2);
         }
 
         // write texture data
-        output.Write(info.Parts[1], offset: 0, info.Parts[1].Length);
-        Debug.WriteLine($"[OUT] Wrote {outputFile} ({new FileInfo(outputFile).Length} bytes)");
+        writer.Write(info.Parts[1]);
+        writer.Flush();
+
+        //write png
+        var outputFile = Path.Combine(info.OutputDir, info.BaseName);
+        if (info.BaseName.EndsWith(".png", StringComparison.OrdinalIgnoreCase) && Options.Current.EnablePngFixup)
+        {
+            stream.Position = 0;
+            var ddsDecoder = new DdsDecoder();
+            var texture = ddsDecoder.DecodeTexture(Configuration.Default, stream);
+            
+            //not going to mess with other formats like cubemap
+            if (texture is FlatTexture flatTexture)
+            {
+                var mipMap = flatTexture.MipMaps.FirstOrDefault();
+                if (mipMap != null)
+                {
+                    var image = mipMap.GetImage();
+                    image.Save(outputFile);
+                    return;
+                }
+            }
+            
+            //fall through if not handled
+        }
+
+        //write dds
+        outputFile = Path.Combine(info.OutputDir, info.BaseName);
+        using var fileStream = File.OpenWrite(outputFile);
+        stream.Position = 0;
+        stream.CopyTo(fileStream);
+
+        //Debug.WriteLine($"[OUT] Wrote {outputFile} ({new FileInfo(outputFile).Length} bytes)");
     }
 
     private static void WriteMesh(ResourceInfo info)
@@ -399,7 +428,7 @@ static class ResourceWriter
                 }
 
                 
-                float[] pos = null, tan = null, bitan = null, nrm = null, uv0 = null, uv1 = null;
+                float[] pos, tan, bitan, nrm, uv0, uv1;
                 switch (f.m_VertexLayoutID)
                 {
                     case 3:
@@ -481,720 +510,4 @@ static class ResourceWriter
             return count;
         }
     }
-
-    /*
-    private static void WriteMesh2(ResourceInfo info)
-    {
-        var fixups = MeshFixups.FromBytes(info.Parts[2]);
-
-        if (fixups.numVisibleResolves > 1)
-            Console.WriteLine("numVisibleResolves > 1");
-
-        using var ms0 = new MemoryStream(info.Parts[0]);
-        using var reader = new BinaryReader(ms0);
-
-        // map resolves by offset -> (resolve, index)
-        var resolvesByOffset = new Dictionary<int, (CWObjectResolve resolve, int idx)>();
-        for (int ri = 0; ri < fixups.numResolves; ri++)
-            resolvesByOffset[fixups.resolves[ri].offset] = (fixups.resolves[ri], ri);
-
-        // Build pointerFieldsByOwner: ownerResolveIdx -> list of (relOffset, targetOffset, targetResolveIdx?)
-        var pointerFieldsByOwner = new Dictionary<int, List<(int relOffset, int targetOffset, int? targetResolveIdx)>>();
-        for (var i = 0; i < fixups.numPointerResolves; i++)
-        {
-            var pointerOffset = (int)fixups.pointerResolveOffsets[i];
-
-            reader.BaseStream.Position = pointerOffset;
-            var rawValue = reader.ReadUInt16();
-
-            var targetOffset = (rawValue == 0 || rawValue == 0xFFFF) ? -1 : (rawValue - 1);
-
-            // find owner resolve index (last resolve whose offset <= pointerOffset)
-            var ownerIdx = -1;
-            for (var ri = 0; ri < fixups.numResolves; ri++)
-            {
-                if (fixups.resolves[ri].offset <= pointerOffset)
-                    ownerIdx = ri;
-                else
-                    break;
-            }
-
-            var relOffset = pointerOffset - (ownerIdx >= 0 ? fixups.resolves[ownerIdx].offset : 0);
-
-            int? targetResolveIdx = null;
-            if (targetOffset >= 0 && resolvesByOffset.TryGetValue(targetOffset, out var targetResolveEntry))
-                targetResolveIdx = targetResolveEntry.idx;
-
-            if (!pointerFieldsByOwner.TryGetValue(ownerIdx, out var list))
-            {
-                list = new List<(int, int, int?)>();
-                pointerFieldsByOwner[ownerIdx] = list;
-            }
-
-            list.Add((relOffset, targetOffset, targetResolveIdx));
-        }
-
-        // Collect mesh node info from part 0 resolves, but driven from root resolve
-        var data = new MshData();
-
-        uint nodeCount = 0;
-        for (var i = 0; i < fixups.numResolves; i++)
-        {
-            var resolve = fixups.resolves[i];
-            reader.BaseStream.Position = resolve.offset;
-
-            var start = resolve.offset;
-            var end = i + 1 < fixups.numResolves ? fixups.resolves[i + 1].offset : (int)fixups.memorySize;
-            var resSize = end - start;
-
-            Debug.WriteLine($"Resolve[{i}] offset=0x{resolve.offset:X} class=0x{resolve.class_id:X} numElems={resolve.num_elements}");
-
-            // If this resolve is the root list (first class at beginning of part 0)
-            if (resolve.class_id != 0xB0000003)
-                continue;
-
-            Debug.WriteLine("  Root Node (0xB0000003) - following its resolve pointers");
-
-            // Assume the root contains `num_elements` 16-bit pointers starting at resolve.offset
-            for (uint ei = 0; ei < resolve.num_elements; ei++)
-            {
-                // position at the ei-th pointer entry in the root block
-                reader.BaseStream.Position = resolve.offset + (ei * 2);
-
-                var rawPtr = reader.ReadUInt16();
-                var targetOffset = rawPtr is 0 or 0xFFFF ? -1 : (rawPtr - 1);
-
-                if (targetOffset < 0)
-                {
-                    Debug.WriteLine($"    Root entry[{ei}] -> null");
-                    continue;
-                }
-
-                if (!resolvesByOffset.TryGetValue(targetOffset, out var targetResolveEntry))
-                {
-                    Debug.WriteLine($"    Root entry[{ei}] -> unknown target offset 0x{targetOffset:X}");
-                    continue;
-                }
-
-                var targetResolve = targetResolveEntry.resolve;
-                var targetIdx = targetResolveEntry.idx;
-
-                Debug.WriteLine($"    Root entry[{ei}] -> Resolve[{targetIdx}] offset=0x{targetResolve.offset:X} class=0x{targetResolve.class_id:X}");
-
-                // Handle the target resolve by its class
-                switch (targetResolve.class_id)
-                {
-                    case 0xB0000004:
-                    case 0xA0000002:
-                        Debug.WriteLine("      <mesh node block>");
-
-                        nodeCount++;
-                        if (nodeCount > 1)
-                            Console.WriteLine("MultiNodeMesh");
-
-                        // Seek to the target resolve data and read structs
-                        reader.BaseStream.Position = targetResolve.offset;
-
-                        var tree = new MshTree
-                        {
-                            Node = new MshNode
-                            {
-                                Type = MshType.Mesh,
-                                Local = reader.ReadStruct<Matrix3X4>(),
-                                BoneTransform = reader.ReadStruct<Matrix3X4>(),
-                                Bounds = reader.ReadStruct<Aabb>()
-                            },
-                            Index = nodeCount
-                        };
-
-                        // If there are pointer fields for this resolve, attempt to read the first pointer as name
-                        if (pointerFieldsByOwner.TryGetValue(targetIdx, out var fields) && fields.Count > 0)
-                        {
-                            var nameTargetOffset = fields[0].targetOffset;
-                            if (nameTargetOffset >= 0)
-                            {
-                                reader.BaseStream.Position = nameTargetOffset;
-                                tree.Node.Name = reader.ReadTerminatedString();
-                            }
-                        }
-
-                        data.Tree.Add(tree);
-                        break;
-
-                    case 0xB000000C:
-                    case 0xA0000001:
-                        Debug.WriteLine("      <packed section> dumped (ignored for now)");
-                        break;
-
-                    case 0xB0000000:
-                    case 0xA0000000:
-                        // text/trivial classes
-                        Debug.WriteLine("      <text/trivial>");
-                        break;
-
-                    default:
-                        Debug.WriteLine($"      <unhandled class 0x{targetResolve.class_id:X}>");
-                        break;
-                }
-            } // end root entries loop
-
-            // After processing root we can stop iterating resolves (root was first and drives everything)
-            break;
-
-            // end if root
-            // otherwise, non-root resolves are ignored here because we're driven from root
-        } // end resolves loop
-
-        // (At this point `data` contains parsed MshTree entries per the root.)
-        // TODO: write or return `data` as required by the rest of your pipeline.
-        Console.WriteLine(data.Mats.Count);
-    }
-
-    //old, reimplement properly.
-    private static void WriteMesh(ResourceInfo info)
-    {
-        var fixups = MeshFixups.FromBytes(info.Parts[2]);
-
-        if (fixups.numVisibleResolves > 1)
-            Console.WriteLine("numVisibleResolves > 1");
-
-        using var ms0 = new MemoryStream(info.Parts[0]);
-        using var reader = new BinaryReader(ms0);
-
-        // map resolves by offset (int) for quick lookup
-        var resolvesByOffset = fixups.resolves.ToDictionary(r => r.offset, r => r);
-
-        // Build pointerFieldsByOwner properly
-        var pointerFieldsByOwner = new Dictionary<int, List<(int relOffset, int targetOffset, int? targetResolveIdx)>>();
-
-        for (var i = 0; i < fixups.numPointerResolves; i++)
-        {
-            var pointerOffset = (int)fixups.pointerResolveOffsets[i];
-
-            reader.BaseStream.Position = pointerOffset;
-            var rawValue = reader.ReadUInt16();
-
-            var targetOffset = rawValue is 0 or 0xFFFF ? -1 : rawValue - 1;
-
-            var ownerIdx = -1;
-            for (var ri = 0; ri < fixups.numResolves; ri++)
-                if (fixups.resolves[ri].offset <= pointerOffset)
-                    ownerIdx = ri;
-                else
-                    break;
-
-            var relOffset = pointerOffset - (ownerIdx >= 0 ? fixups.resolves[ownerIdx].offset : 0);
-
-            int? targetResolveIdx = null;
-            if (targetOffset >= 0 && resolvesByOffset.TryGetValue(targetOffset, out var targetResolve))
-                targetResolveIdx = Array.IndexOf(fixups.resolves, targetResolve);
-
-            if (!pointerFieldsByOwner.TryGetValue(ownerIdx, out var list))
-            {
-                list = [];
-                pointerFieldsByOwner[ownerIdx] = list;
-            }
-
-            list.Add((relOffset, targetOffset, targetResolveIdx));
-        }
-
-        // Collect mesh node info from part 0 resolves
-        var data = new MshData();
-
-        uint nodeCount = 0;
-        for (var i = 0; i < fixups.numResolves; i++)
-        {
-            var resolve = fixups.resolves[i];
-            reader.BaseStream.Position = resolve.offset;
-
-            var start = resolve.offset;
-            var end = i + 1 < fixups.numResolves
-                ? fixups.resolves[i + 1].offset
-                : (int)fixups.memorySize;
-            var resSize = end - start;
-
-            Debug.WriteLine($"Resolve[{i}] offset=0x{resolve.offset:X} class=0x{resolve.class_id:X}");
-
-            // find pointer fields that belong to this resolve (if any)
-            pointerFieldsByOwner.TryGetValue(i, out var fields);
-
-            switch (resolve.class_id)
-            {
-                case 0xB0000000:
-                case 0xA0000000:
-                    // text / trivial classes
-                    break;
-
-                case 0xB0000004:
-                case 0xA0000002:
-                    Debug.WriteLine("  <mesh node block>");
-                    nodeCount++;
-
-                    if (nodeCount > 1)
-                        Console.WriteLine("MultiNodeMesh");
-
-                    var tree = new MshTree
-                    {
-                        Node = new MshNode
-                        {
-                            Type = MshType.Mesh,
-                            Local = reader.ReadStruct<Matrix3X4>(),
-                            BoneTransform = reader.ReadStruct<Matrix3X4>(),
-                            Bounds = reader.ReadStruct<Aabb>()
-                        },
-                        Index = nodeCount
-                    };
-
-                    if (fields is { Count: > 0 })
-                    {
-                        reader.BaseStream.Position = fields[0].targetOffset;
-
-                        tree.Node.Name = reader.ReadTerminatedString();
-                    }
-
-
-                    data.Tree.Add(tree);
-                    break;
-
-                case 0xB000000C:
-                case 0xA0000001:
-                    Debug.WriteLine("  <packed section> dumped (ignored for now)");
-                    break;
-            }
-        }
-
-        using var ms3 = new MemoryStream(info.Parts[3]);
-        using var ms3Reader = new BinaryReader(ms3);
-
-        var vertexSize = Marshal.SizeOf<DlVertex32>();
-        if (ms3.Length % vertexSize != 0)
-            throw new InvalidDataException("Buffer length is not a multiple of DL_Vertex32 size.");
-
-        var count = (int)(ms3.Length / vertexSize);
-        var verts = ms3Reader.ReadStructArray<DlVertex32>(count);
-
-
-
-
-
-
-        foreach (var mesh in data.Tree)
-        {
-            if (mesh.Node.Type != MshType.Mesh)
-                continue;
-
-            var mFmt = new MeshFmt();
-
-
-            mesh.Mesh.Add(mFmt);
-        }
-
-
-        var outName = info.BaseName + ".msh";
-        var outputFile = Path.Combine(info.OutputDir, outName);
-        //outputFile = FileHelpers.MakeUniqueFilename(outputFile);
-
-
-
-        using var fsOut = File.OpenWrite(outputFile);
-        var writer = new MshWriter(fsOut);
-
-        //write msh data
-        writer.MshSave(ref data);
-    }
-
-    private static void WriteMesh(ResourceInfo info)
-    {
-        var fixups = MeshFixups.FromBytes(info.Parts[2]);
-
-        if (fixups.numVisibleResolves > 1)
-            Console.WriteLine("numVisibleResolves > 1");
-
-        using var ms0 = new MemoryStream(info.Parts[0]);
-        using var reader = new BinaryReader(ms0);
-
-        // map resolves by offset (int) for quick lookup
-        var resolvesByOffset = fixups.resolves.ToDictionary(r => r.offset, r => r);
-
-        // Build pointerFieldsByOwner properly
-        var pointerFieldsByOwner =
-            new Dictionary<int, List<(int relOffset, int targetOffset, int? targetResolveIdx)>>();
-
-        for (var i = 0; i < fixups.numPointerResolves; i++)
-        {
-            var pointerOffset = (int)fixups.pointerResolveOffsets[i];
-
-            reader.BaseStream.Position = pointerOffset;
-            var rawValue = reader.ReadUInt16();
-
-            var targetOffset = rawValue is 0 or 0xFFFF ? -1 : rawValue - 1;
-
-            var ownerIdx = -1;
-            for (var ri = 0; ri < fixups.numResolves; ri++)
-                if (fixups.resolves[ri].offset <= pointerOffset)
-                    ownerIdx = ri;
-                else
-                    break;
-
-            var relOffset = pointerOffset - (ownerIdx >= 0 ? fixups.resolves[ownerIdx].offset : 0);
-
-            int? targetResolveIdx = null;
-            if (targetOffset >= 0 && resolvesByOffset.TryGetValue(targetOffset, out var targetResolve))
-                targetResolveIdx = Array.IndexOf(fixups.resolves, targetResolve);
-
-            if (!pointerFieldsByOwner.TryGetValue(ownerIdx, out var list))
-            {
-                list = [];
-                pointerFieldsByOwner[ownerIdx] = list;
-            }
-
-            list.Add((relOffset, targetOffset, targetResolveIdx));
-        }
-
-        // Collect mesh node info from part 0 resolves
-        var data = new MshData
-        {
-            Tree = [],
-            Mats = [],
-            SurfaceTypes = []
-        };
-
-        uint nodeCount = 0;
-
-        for (var i = 0; i < fixups.numResolves; i++)
-        {
-            var resolve = fixups.resolves[i];
-            reader.BaseStream.Position = resolve.offset;
-
-            var start = resolve.offset;
-            var end = i + 1 < fixups.numResolves
-                ? fixups.resolves[i + 1].offset
-                : (int)fixups.memorySize;
-            var resSize = end - start;
-
-            Debug.WriteLine($"Resolve[{i}] offset=0x{resolve.offset:X} class=0x{resolve.class_id:X}");
-
-            // find pointer fields that belong to this resolve (if any)
-            pointerFieldsByOwner.TryGetValue(i, out var fields);
-
-            switch (resolve.class_id)
-            {
-                case 0xB0000000:
-                case 0xA0000000:
-                    // text / trivial classes
-                    break;
-
-                case 0xB0000004:
-                case 0xA0000002:
-                    Debug.WriteLine("  <mesh node block>");
-                    nodeCount++;
-
-                    if (nodeCount > 1)
-                        Console.WriteLine("MultiNodeMesh");
-
-                    MshTree tree = default;
-
-                    tree.Node = new MshNode();
-                    tree.Node.Type = MshType.Mesh;
-
-                    tree.Index = nodeCount;
-
-                    // read inline matrices/bounds
-                    tree.Node.Local = StreamHelpers.ReadStruct<Matrix3X4>(reader.BaseStream);
-                    tree.Node.BoneTransform = StreamHelpers.ReadStruct<Matrix3X4>(reader.BaseStream);
-                    tree.Node.Bounds = StreamHelpers.ReadStruct<Aabb>(reader.BaseStream);
-
-                    if (fields is { Count: > 0 })
-                    {
-                        reader.BaseStream.Position = fields[0].targetOffset;
-
-                        tree.Node.Name = StreamHelpers.ReadCString(reader.BaseStream, Encoding.ASCII);
-                    }
-
-
-                    data.Tree.Add(tree);
-                    break;
-
-                case 0xB000000C:
-                case 0xA0000001:
-                    Debug.WriteLine("  <packed section> dumped (ignored for now)");
-                    break;
-            }
-        }
-
-        using var ms3 = new MemoryStream(info.Parts[3]);
-        var vertexSize = Marshal.SizeOf<DlVertex32>();
-        if (ms3.Length % vertexSize != 0)
-            throw new InvalidDataException("Buffer length is not a multiple of DL_Vertex32 size.");
-
-        var count = (int)(ms3.Length / vertexSize);
-        var verts = StreamHelpers.ReadArray<DlVertex32>(ms3, count);
-
-        var positionBuffer = new float[count * 3];
-        var tangentData = new float[count * 3];
-        var bitangentData = new float[count * 3];
-        var normalData = new float[count * 3];
-        var uv0Array = new float[count * 2];
-        var uv1Array = new float[count * 2];
-
-        for (var i = 0; i < count; i++)
-        {
-            var v = verts[i];
-            positionBuffer[i * 3 + 0] = v.PX;
-            positionBuffer[i * 3 + 1] = v.PY;
-            positionBuffer[i * 3 + 2] = v.PZ;
-
-            var qx = v.QShort[0] / 32767.0f;
-            var qy = v.QShort[1] / 32767.0f;
-            var qz = v.QShort[2] / 32767.0f;
-            var qw = v.QShort[3] / 32767.0f;
-
-            Quaternion q = new(qx, qy, qz, qw);
-            q = Quaternion.Normalize(q);
-
-            var tangent = Vector3.Transform(Vector3.UnitX, q);
-            var bitangent = Vector3.Transform(Vector3.UnitY, q);
-            var normal = Vector3.Transform(Vector3.UnitZ, q);
-
-            tangentData[i * 3 + 0] = tangent.X;
-            tangentData[i * 3 + 1] = tangent.Y;
-            tangentData[i * 3 + 2] = tangent.Z;
-
-            bitangentData[i * 3 + 0] = bitangent.X;
-            bitangentData[i * 3 + 1] = bitangent.Y;
-            bitangentData[i * 3 + 2] = bitangent.Z;
-
-            normalData[i * 3 + 0] = normal.X;
-            normalData[i * 3 + 1] = normal.Y;
-            normalData[i * 3 + 2] = normal.Z;
-
-            uv0Array[i * 2] = (float)v.HalfUV0U;
-            uv0Array[i * 2 + 1] = (float)v.HalfUV0V;
-
-            uv1Array[i * 2] = (float)v.HalfUV1U;
-            uv1Array[i * 2 + 1] = (float)v.HalfUV1V;
-        }
-
-        var surfaceDesc = new SurfaceDescManaged
-        {
-            MatId = 0,
-            Offset = 0,
-            Count = 0,
-            NumBones = 0
-        };
-
-        var vertexFormat = new VertexFormat
-        {
-            Fmt = MvFmt.Float3,
-            BiasScale = new Vec4 { X = 0, Y = 0, Z = 0, W = 1 },
-            Stride = 12,
-            VNormalFmt = MvFmt.Float3,
-            VNormalScale = 1f,
-            VNormalStride = 12,
-            VTangentFmt = MvFmt.Float3,
-            VTangentScale = 1f,
-            VTangentStride = 12,
-            VUvFmt = MvFmt.Float2,
-            VUvScale = 1f,
-            VUvStride = 8
-        };
-
-        // Build the MTOOl_FMT group
-        byte[] mtoolGroupBytes;
-        using (var mtoolStream = new MemoryStream())
-        {
-            // MshMesh struct (mtool header data)
-            var mtool = new MshMesh
-            {
-                NumIndices = (uint)(info.Parts[4].Length / sizeof(short)),
-                NumVertices = (uint)count,
-                NumSurfaces = 1
-            };
-
-            // Write MshMesh (this is the "data" of the MTOOl_FMT chunk)
-            //I don't write the chunk struct here, as I'll do that when writing the node group
-            StreamHelpers.WriteStruct(mtoolStream, mtool);
-
-            // Child chunks for MTOOl_FMT
-            // VertexFormat chunk
-            var vertexFormatChunk = new Chunk
-            {
-                Id = ChunkTypes.VertexFormat,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + Marshal.SizeOf<VertexFormat>()),
-                DataSize = (uint)Marshal.SizeOf<VertexFormat>()
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexFormatChunk);
-            StreamHelpers.WriteStruct(mtoolStream, vertexFormat);
-
-            // VertexBuffer chunk
-            var vertexBufferChunk = new Chunk
-            {
-                Id = ChunkTypes.VertexBuffer,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + positionBuffer.Length * sizeof(float)),
-                DataSize = (uint)(positionBuffer.Length * sizeof(float))
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexBufferChunk);
-            StreamHelpers.WriteArray(mtoolStream, positionBuffer);
-
-            // Normals / Tangents / Bitangent / UVs
-            var vertexNormalChunk = new Chunk
-            {
-                Id = ChunkTypes.VertexNormal0,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + normalData.Length * sizeof(float)),
-                DataSize = (uint)(normalData.Length * sizeof(float))
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexNormalChunk);
-            StreamHelpers.WriteArray(mtoolStream, normalData);
-
-            var vertexTangentChunk = new Chunk
-            {
-                Id = ChunkTypes.VertexTangent0,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + tangentData.Length * sizeof(float)),
-                DataSize = (uint)(tangentData.Length * sizeof(float))
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexTangentChunk);
-            StreamHelpers.WriteArray(mtoolStream, tangentData);
-
-            var vertexBitangentChunk = new Chunk
-            {
-                Id = ChunkTypes.VertexBitangent0,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + bitangentData.Length * sizeof(float)),
-                DataSize = (uint)(bitangentData.Length * sizeof(float))
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexBitangentChunk);
-            StreamHelpers.WriteArray(mtoolStream, bitangentData);
-
-            var vertexUv0Chunk = new Chunk
-            {
-                Id = ChunkTypes.VertexUV0,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + uv0Array.Length * sizeof(float)),
-                DataSize = (uint)(uv0Array.Length * sizeof(float))
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexUv0Chunk);
-            StreamHelpers.WriteArray(mtoolStream, uv0Array);
-
-            var vertexUv1Chunk = new Chunk
-            {
-                Id = ChunkTypes.VertexUV1,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + uv1Array.Length * sizeof(float)),
-                DataSize = (uint)(uv1Array.Length * sizeof(float))
-            };
-            StreamHelpers.WriteStruct(mtoolStream, vertexUv1Chunk);
-            StreamHelpers.WriteArray(mtoolStream, uv1Array);
-
-            // Index buffer chunk
-            var indexBufferChunk = new Chunk
-            {
-                Id = ChunkTypes.IndexBuffer,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + info.Parts[4].Length),
-                DataSize = (uint)info.Parts[4].Length
-            };
-            StreamHelpers.WriteStruct(mtoolStream, indexBufferChunk);
-            mtoolStream.Write(info.Parts[4], 0, info.Parts[4].Length);
-
-            // SurfaceDescAlt chunk
-            var surfaceDescAltChunk = new Chunk
-            {
-                Id = ChunkTypes.SurfaceDescAlt,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + Marshal.SizeOf<SurfaceDescManaged>()),
-                DataSize = (uint)Marshal.SizeOf<SurfaceDescManaged>()
-            };
-            StreamHelpers.WriteStruct(mtoolStream, surfaceDescAltChunk);
-            StreamHelpers.WriteStruct(mtoolStream, surfaceDesc);
-
-            mtoolGroupBytes = mtoolStream.ToArray();
-        }
-
-        // For each node, build a Node chunk that contains a MTOOl_FMT chunk
-        using var nodeGroupStream = new MemoryStream();
-        for (var i = 0; i < data.Tree.Count; i++)
-        {
-            var node = data.Tree[i].Node;
-
-            var mtoolDataSize = (uint)Marshal.SizeOf<MshMesh>();
-            var mtoolChunk = new Chunk
-            {
-                Id = ChunkTypes.MTOOl_FMT,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + mtoolGroupBytes.Length),
-                DataSize = mtoolDataSize
-            };
-
-            using var nodePayload = new MemoryStream();
-            StreamHelpers.WriteStruct(nodePayload, node);
-
-            StreamHelpers.WriteStruct(nodePayload, mtoolChunk);
-            nodePayload.Write(mtoolGroupBytes, 0, mtoolGroupBytes.Length);
-
-            var nodePayloadBytes = nodePayload.ToArray();
-            var nodeChunk = new Chunk
-            {
-                Id = ChunkTypes.NodeV3,
-                Version = 0,
-                ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + nodePayloadBytes.Length),
-                DataSize = (uint)Marshal.SizeOf<MshNode>()
-            };
-
-            StreamHelpers.WriteStruct(nodeGroupStream, nodeChunk);
-            nodeGroupStream.Write(nodePayloadBytes, 0, nodePayloadBytes.Length);
-        }
-
-        // Build final root header chunk and write a single .msh file
-        var nodeGroupBytes = nodeGroupStream.ToArray();
-
-        data.Root = new MshRoot
-        {
-            NumNodes = nodeCount,
-            NumMaterials = 0,
-            NumSurfaceTypes = 0
-        };
-
-        var header = new Chunk
-        {
-            Id = ChunkTypes.Header,
-            Version = 0,
-            ChunkSize = (uint)(Marshal.SizeOf<Chunk>() + Marshal.SizeOf<MshRoot>() + nodeGroupBytes.Length),
-            DataSize = (uint)Marshal.SizeOf<MshRoot>()
-        };
-
-        var outName = info.BaseName + ".msh";
-        var outputFile = Path.Combine(info.OutputDir, outName);
-        outputFile = FileHelpers.MakeUniqueFilename(outputFile);
-
-        using (var output = File.OpenWrite(outputFile))
-        {
-            StreamHelpers.WriteStruct(output, header);
-            StreamHelpers.WriteStruct(output, data.Root);
-            output.Write(nodeGroupBytes, 0, nodeGroupBytes.Length);
-        }
-
-        Console.WriteLine($"Wrote {outputFile}");
-    }
-    * /
-
-    //may not be used anymore
-    private static void WriteBuilderInformation(ResourceInfo info)
-    {
-        for (var f = 0; f < info.Parts.Count; f++)
-        {
-            var part = info.Parts[f];
-            var outName = info.BaseName + ".txt";
-            if (f >= 1) outName = info.BaseName + "_Part_" + f + ".txt";
-
-            var outputFile = Path.Combine(info.OutputDir, outName);
-            outputFile = FileHelpers.MakeUniqueFilename(outputFile);
-
-            File.WriteAllBytes(outputFile, part);
-        }
-    }
-    */
 }

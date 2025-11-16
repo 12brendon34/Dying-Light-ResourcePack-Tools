@@ -55,3 +55,4 @@ nunit-*.xml
 
 # User Settings
 ChromEd_BTools.sln.DotSettings.user
+/.idea
