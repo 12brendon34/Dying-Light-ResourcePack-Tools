@@ -19,9 +19,9 @@ static class ResourceWriter
     {
         { (int)EResType.Type.Texture, WriteTexture },
         { (int)EResType.Type.Mesh, WriteMesh },
-        { (int)EResType.Type.Animation, WriteAnimation }
+        { (int)EResType.Type.Animation, WriteAnimation },
         //{ (int)ResourceTypeInfo.Fx, WriteFx }, //removed
-        //{ (int)EResType.Type.BuilderInformation, WriteBuilderInformation }
+        { (int)EResType.Type.BuilderInformation, WriteBuilderInformation }
         // add more mappings here
     };
 
@@ -53,6 +53,12 @@ static class ResourceWriter
         }
     }
 
+    private static void WriteBuilderInformation(ResourceInfo info)
+    {
+        var filename = Path.Combine(info.OutputDir, $"{info.BaseName}.txt");
+        File.WriteAllBytes(filename, info.Parts[0]);
+    }
+
     private static void WriteAnimation(ResourceInfo info)
     {
         if (info.Parts.Count > 1)
@@ -71,11 +77,24 @@ static class ResourceWriter
             Console.Error.WriteLine($"[WARN] Texture {info.BaseName} does not have enough parts.");
             return;
         }
-        
-        using var reader = new BinaryReader(new MemoryStream(info.Parts[0]));
-        var textureHeader = reader.ReadStruct<RTextureInfo>();
 
-        var infoFmt = ResourceTypeInfo.FormatInfo.Get(textureHeader.Format);
+        using var reader = new BinaryReader(new MemoryStream(info.Parts[0]));
+        RTextureInfo textureHeader;
+        ResourceTypeInfo.TextureFormat format;
+        if (info.isDyingLight1)
+        {
+            //convert DL1 format to DL2, so I don't need to rewrite everything
+            var oldTextureHeader = reader.ReadStruct<SPackTextureHeader>();
+            textureHeader = oldTextureHeader.ToRTextureInfo();
+            format = oldTextureHeader.GetFormat();
+        }
+        else
+        {
+            textureHeader = reader.ReadStruct<RTextureInfo>(); 
+            format = textureHeader.GetFormat();  
+        }
+        
+        var infoFmt = ResourceTypeInfo.FormatInfo.Get(format);
         uint pitchOrLinearSize;
 
         if (infoFmt.IsBlockCompressed)
@@ -128,7 +147,7 @@ static class ResourceWriter
             Depth = textureHeader.Depth,
             MipMapCount = mipCount,
             Reserved1 = new uint[11],
-            PixelFormat = DDS.GetPixelFormat(textureHeader.Format),
+            PixelFormat = DDS.GetPixelFormat(format),
             Caps = DDSCAPS_TEXTURE | (textureHeader.MipLevels > 1 ? DDSCAPS_MIPMAP | DDSCAPS_COMPLEX : 0),
             Caps2 = 0,
             Caps3 = 0,
@@ -163,7 +182,7 @@ static class ResourceWriter
         // extended DX10 header if needed
         var dx10Header = new DDS.DDS_HEADER_DX10
         {
-            DxgiFormat = ResourceTypeInfo.GetDXGIFormat(textureHeader.Format),
+            DxgiFormat = ResourceTypeInfo.GetDXGIFormat(format),
             ResourceDimension = DDS.D3D10_RESOURCE_DIMENSION.Texture2D,
             MiscFlag = 0,
             ArraySize = 1,
@@ -174,13 +193,13 @@ static class ResourceWriter
         {
             if (dx10Header.DxgiFormat == DDS.DXGI_FORMAT.DXGI_FORMAT_UNKNOWN)
             {
-                Console.Error.WriteLine($"[WARN] Texture {info.BaseName}, with textureHeader.Format of {textureHeader.Format} does not have matching DxgiFormat.");
+                Console.Error.WriteLine($"[WARN] Texture {info.BaseName}, with textureHeader.Format of {format} does not have matching DxgiFormat.");
                 return;
             }
         }
         else
         {
-            Debug.WriteLine($"[INFO] Texture {info.BaseName}, with textureHeader.Format of {textureHeader.Format} supports only DX9.");
+            Debug.WriteLine($"[INFO] Texture {info.BaseName}, with textureHeader.Format of {format} supports only DX9.");
         }
 
         using var stream = new MemoryStream();
@@ -268,6 +287,12 @@ static class ResourceWriter
 
     private static void WriteMesh(ResourceInfo info)
     {
+        if (info.isDyingLight1)
+        {
+            WriteBinary(info);
+            return;
+        }
+
         if (info.Parts.Count != 5)
         {
             Console.WriteLine($"[ERROR] Mesh {info.BaseName} does not have 5 parts. Unhandled for now");

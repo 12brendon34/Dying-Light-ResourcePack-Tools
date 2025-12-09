@@ -14,6 +14,7 @@ public class Rp6Processor
 {
     private readonly BinaryReader _br;
     private readonly Stream _stream;
+    private static bool _isDyingLight1;
 
     public Rp6Processor(Stream stream)
     {
@@ -47,14 +48,64 @@ public class Rp6Processor
 
         var namesBuffer = Encoding.ASCII.GetString(namesBufBytes);
 
+        // determine DL1 layout once and store it on the instance
+        _isDyingLight1 = DetermineChromeVersion(definedTypes, _stream.Length);
+        
         var decompressedSections = DecompressDefinedTypes(_stream, definedTypes, _stream.Length);
         var resources = ExtractLogicalResources(_stream, physEntries, logHeaders, namesBuffer, namesIndices, definedTypes, decompressedSections, outputRoot);
         return resources;
     }
 
+    //If DL1 or DL2/TB
+    private static bool DetermineChromeVersion(ResourceTypeHeader[] definedTypes, long fileLength)
+    {
+        var entrySize = Marshal.SizeOf<ResourceEntryHeader>();
+
+        var entries = 0;
+        var dl1Valid = 0;
+        var dl2Valid = 0;
+
+        foreach (var dt in definedTypes)
+        {
+            entries++;
+            long raw = dt.DataFileOffset;
+
+            // DL1 raw is a byte offset
+            if (raw < fileLength)
+                dl1Valid++;
+
+            // DL2 raw is an index, byte offset = raw * entrySize
+            // check overflow before multiplying
+            if (raw > long.MaxValue / entrySize)
+                continue;
+            
+            var dl2Offset = raw * entrySize;
+            if (dl2Offset < fileLength)
+                dl2Valid++;
+            
+            //else overflow, dl2 invalid for this entry
+        }
+
+        // No Results, Assume DL1
+        if (dl1Valid == 0 && dl2Valid == 0)
+            return true;
+
+        //DL2 valid but DL1 not, DL2 wins
+        if (dl2Valid == entries && dl1Valid != entries)
+            return false;
+
+        //DL1 Valid not DL2, DL1 Wins
+        if (dl1Valid == entries && dl2Valid != entries)
+            return true;
+
+        //if "both" are valid, assume DL2
+        return false;
+    }
+    
     private static List<byte[]?> DecompressDefinedTypes(Stream input, ResourceTypeHeader[] definedTypes, long fileLength)
     {
         var result = new List<byte[]?>(definedTypes.Length);
+        var entrySize = Marshal.SizeOf<ResourceEntryHeader>();
 
         for (var i = 0; i < definedTypes.Length; i++)
         {
@@ -62,8 +113,28 @@ public class Rp6Processor
             long dataFileOffset = dt.DataFileOffset; // ResourceEntryHeader count
             long compressedSize = dt.CompressedByteSize; // bytes
             long uncompressedSize = dt.DataByteSize; // bytes
-
-            var dataFileOffsetBytes = Marshal.SizeOf<ResourceEntryHeader>() * dataFileOffset;
+            
+            long dataFileOffsetBytes;
+            if (_isDyingLight1)
+            {
+                dataFileOffsetBytes = dataFileOffset;
+            }
+            else
+            {
+                //dataFileOffset is a count of ResourceEntryHeader structures
+                try
+                {
+                    checked
+                    {
+                        dataFileOffsetBytes = entrySize * dataFileOffset;
+                    }
+                }
+                catch (OverflowException)
+                {
+                    Console.Error.WriteLine($"[WARN] dataFileOffset multiplication overflow for defined type {i}: ({dataFileOffset}). Falling back to treating as bytes.");
+                    dataFileOffsetBytes = dataFileOffset;
+                }
+            }
 
             if (dataFileOffsetBytes > fileLength)
             {
@@ -71,81 +142,89 @@ public class Rp6Processor
                 result.Add(item: null);
                 continue;
             }
+            
 
-            if (compressedSize > 0)
+            if (dataFileOffsetBytes < 0 || dataFileOffsetBytes > fileLength)
             {
-                if (dataFileOffsetBytes + compressedSize > fileLength)
-                {
-                    Console.Error.WriteLine($"[WARN] compressed blob for type {i} extends beyond file; skipping.");
-                    result.Add(item: null);
-                    continue;
-                }
+                Console.Error.WriteLine($"[WARN] invalid dataFileOffset for defined type {i}: ({dataFileOffsetBytes} bytes). Skipping.");
+                result.Add(null);
+                continue;
+            }
 
+            if (compressedSize <= 0)
+            {
+                // nothing to decompress
+                result.Add(null);
+                Debug.WriteLine($"[INFO] DefinedType[{i}] not compressed at {dataFileOffsetBytes} (uncompressed size {uncompressedSize}).");
+                continue;
+            }
+
+            if (dataFileOffsetBytes + compressedSize > fileLength)
+            {
+                Console.Error.WriteLine($"[WARN] compressed blob for type {i} extends beyond file; skipping.");
+                result.Add(null);
+                continue;
+            }
+
+            try
+            {
                 input.Seek(dataFileOffsetBytes, SeekOrigin.Begin);
+
                 var compressedBuf = new byte[compressedSize];
                 var cRead = input.Read(compressedBuf, offset: 0, (int)compressedSize);
                 if (cRead != compressedSize)
                 {
                     Console.Error.WriteLine($"[WARN] short read of compressed blob for type {i}: {cRead}/{compressedSize}.");
-                    result.Add(item: null);
+                    result.Add(null);
                     continue;
                 }
 
-                try
+                // Choose zlib vs LZMA based on header
+                //if (compressedBuf is [0x78, ..]) // zlib (0x78 header)
+                if (CheckZlib(compressedBuf))
                 {
-                    //if (compressedBuf is [0x78, ..]) // zlib (0x78 header)
-                    if (CheckZlib(compressedBuf))
+                    using var mem = new MemoryStream(compressedBuf);
+                    using var z = new ZlibStream(mem, CompressionMode.Decompress, leaveOpen: true);
+                    var outBuf = new byte[uncompressedSize];
+                    var got = 0;
+                    while (got < outBuf.Length)
                     {
-                        using var mem = new MemoryStream(compressedBuf);
-                        using var z = new ZlibStream(mem, CompressionMode.Decompress, leaveOpen: true);
-                        var outBuf = new byte[uncompressedSize];
-                        var got = 0;
-                        while (got < outBuf.Length)
-                        {
-                            var r = z.Read(outBuf, got, outBuf.Length - got);
-                            if (r <= 0) break;
-
-                            got += r;
-                        }
-
-                        if (got != outBuf.Length)
-                            Console.Error.WriteLine($"[WARN] zlib produced {got}/{outBuf.Length} bytes for type {i}.");
-
-                        result.Add(outBuf);
-                        Debug.WriteLine($"[INFO] DefinedType[{i}] zlib-decompressed: {uncompressedSize} bytes.");
+                        var r = z.Read(outBuf, got, outBuf.Length - got);
+                        if (r <= 0) break;
+                        got += r;
                     }
-                    else
-                    {
-                        using var mem = new MemoryStream(compressedBuf);
-                        using var decoder = new DecoderStream(mem);
-                        decoder.Initialize(DecoderProperties.Default);
-                        var outBuf = new byte[uncompressedSize];
-                        var got = 0;
-                        while (got < outBuf.Length)
-                        {
-                            var r = decoder.Read(outBuf, got, outBuf.Length - got);
-                            if (r <= 0) break;
 
-                            got += r;
-                        }
+                    if (got != outBuf.Length)
+                        Console.Error.WriteLine($"[WARN] zlib produced {got}/{outBuf.Length} bytes for type {i}.");
 
-                        if (got != outBuf.Length)
-                            Console.Error.WriteLine($"[WARN] LZMA produced {got}/{outBuf.Length} bytes for type {i}.");
-
-                        result.Add(outBuf);
-                        Console.WriteLine($"[INFO] DefinedType[{i}] LZMA-decompressed: {uncompressedSize} bytes.");
-                    }
+                    result.Add(outBuf);
+                    Debug.WriteLine($"[INFO] DefinedType[{i}] zlib-decompressed: {uncompressedSize} bytes.");
                 }
-                catch (Exception ex)
+                else
                 {
-                    Console.Error.WriteLine($"[ERROR] decompressing defined type {i}: {ex.Message}");
-                    result.Add(item: null);
+                    using var mem = new MemoryStream(compressedBuf);
+                    using var decoder = new DecoderStream(mem);
+                    decoder.Initialize(DecoderProperties.Default);
+                    var outBuf = new byte[uncompressedSize];
+                    var got = 0;
+                    while (got < outBuf.Length)
+                    {
+                        var r = decoder.Read(outBuf, got, outBuf.Length - got);
+                        if (r <= 0) break;
+                        got += r;
+                    }
+
+                    if (got != outBuf.Length)
+                        Console.Error.WriteLine($"[WARN] LZMA produced {got}/{outBuf.Length} bytes for type {i}.");
+
+                    result.Add(outBuf);
+                    Console.WriteLine($"[INFO] DefinedType[{i}] LZMA-decompressed: {uncompressedSize} bytes.");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                result.Add(item: null);
-                Debug.WriteLine($"[INFO] DefinedType[{i}] not compressed {dataFileOffsetBytes} bytes, size {uncompressedSize}).");
+                Console.Error.WriteLine($"[ERROR] decompressing defined type {i}: {ex.Message}");
+                result.Add(null);
             }
         }
 
@@ -171,7 +250,7 @@ public class Rp6Processor
     private static List<ResourceInfo> ExtractLogicalResources(Stream input, ResourceEntryHeader[] physEntries, LogicalResourceEntryHeader[] logHeaders, string namesBuffer, uint[] namesIndices, ResourceTypeHeader[] definedTypes, List<byte[]?> decompressedSections, string outputRoot)
     {
         var resources = new List<ResourceInfo>();
-        var unitSize = Marshal.SizeOf<ResourceEntryHeader>(); // bytes per "unit" in this format
+        var entrySize = Marshal.SizeOf<ResourceEntryHeader>();
 
         for (var i = 0; i < logHeaders.Length; i++)
         {
@@ -179,11 +258,11 @@ public class Rp6Processor
             var filetype = (int)(logHeader.Bitfields >> 16 & 0xFFu);
             var entryCount = (int)(logHeader.Bitfields & 0xFFu);
             var currentResource = (int)logHeader.FirstResource;
-
+            
             var fullText = FileHelpers.GetNullTerminatedString(namesBuffer, (int)namesIndices[i]);
             var baseName = FileHelpers.SanitizeFileName(fullText);
             var typeName = EResType.GetPrettyName((EResType.Type)filetype);
-
+            
             var fileParts = new List<byte[]>();
 
             for (var p = 0; p < entryCount; p++)
@@ -196,74 +275,81 @@ public class Rp6Processor
 
                 var phys = physEntries[currentResource];
                 var physSection = (int)(phys.Bitfields & 0xFFu);
-                long dataSize = phys.DataByteSize; // size in bytes
-                ulong dataOffsetUnits = phys.DataOffset; // offset expressed in units (number of ResourceEntryHeader-sized blocks)
-
+                var dataSize = phys.DataByteSize; // size in bytes
+                //Count of ResourceEntryHeader on DL2 and TB, Bytes on DL1 and older
+                
+                long partOffsetBytes = phys.DataOffset;
+                if (!_isDyingLight1)
+                {
+                    try
+                    {
+                        checked
+                        {
+                            partOffsetBytes = entrySize * phys.DataOffset;
+                        }
+                    }
+                    catch (OverflowException)
+                    {
+                        Console.Error.WriteLine($"[WARN] dataFileOffset multiplication overflow for defined type {i}: ({phys.DataOffset}). Falling back to treating as bytes.");
+                    }
+                }
+                
                 if (physSection < 0 || physSection >= definedTypes.Length)
                 {
                     Console.Error.WriteLine($"[WARN] invalid physSection {physSection} for part {p}");
                     break;
                 }
-
+                
                 var typeHdr = definedTypes[physSection];
-                ulong sectionBaseUnits = typeHdr.DataFileOffset;
+                long sectionBaseBytes = typeHdr.DataFileOffset;
+                if (!_isDyingLight1)
+                {
+                    try
+                    {
+                        checked
+                        {
+                            sectionBaseBytes = entrySize * typeHdr.DataFileOffset;
+                        }
+                    }
+                    catch (OverflowException)
+                    {
+                        Console.Error.WriteLine($"[WARN] dataFileOffset multiplication overflow for defined type {i}: ({typeHdr.DataFileOffset}). Falling back to treating as bytes.");
+                    }
+                }
+                
                 var sectionMarkedCompressed = typeHdr.CompressedByteSize > 0;
-
                 var hasDecompressedBuffer = physSection < decompressedSections.Count && decompressedSections[physSection] != null;
+                
                 if (sectionMarkedCompressed && !hasDecompressedBuffer)
                 {
                     Console.Error.WriteLine($"[WARN] section {physSection} marked compressed and no decompressed buffer available; skipping part {p}.");
                     currentResource++;
                     continue;
                 }
-
-                var sectionBaseBytes = sectionBaseUnits * (ulong)unitSize;
-                var partOffsetBytes = dataOffsetUnits * (ulong)unitSize;
-
-                // Overflow guard
-                if (sectionBaseBytes > ulong.MaxValue - partOffsetBytes)
-                {
-                    Console.Error.WriteLine("[WARN] computed file offset overflow.");
-                    break;
-                }
-
-                var absoluteOffsetBytesU = sectionBaseBytes + partOffsetBytes;
-
+                
+                var absoluteOffsetBytes = sectionBaseBytes + partOffsetBytes;
                 var part = new byte[dataSize];
 
                 if (hasDecompressedBuffer)
                 {
                     var dec = decompressedSections[physSection]!;
-                    if (absoluteOffsetBytesU + (ulong)dataSize > (ulong)dec.Length)
+                    // decompressed buffer is the section contents, so offset into it is the data offset only
+                    int decOffset;
+                    try
                     {
-                        Console.Error.WriteLine($"[WARN] requested slice outside decompressed buffer (section {physSection}).");
+                        decOffset = checked((int)partOffsetBytes);
+                    }
+                    catch (OverflowException)
+                    {
+                        Console.Error.WriteLine($"[ERROR] partOffsetBytes too large for section {physSection}.");
                         break;
                     }
 
-                    if (absoluteOffsetBytesU > int.MaxValue || dataSize > int.MaxValue)
-                    {
-                        Console.Error.WriteLine("[WARN] decompressed slice too large to copy with BlockCopy.");
-                        break;
-                    }
-
-                    Buffer.BlockCopy(dec, (int)absoluteOffsetBytesU, part, dstOffset: 0, (int)dataSize);
-                    Debug.WriteLine($"[INFO] Read part {p} from decompressed section {physSection} offset {absoluteOffsetBytesU} size {dataSize}");
+                    Buffer.BlockCopy(dec, decOffset, part, dstOffset: 0, count: (int)dataSize);
+                    Debug.WriteLine($"[INFO] Read part {p} from decompressed section {physSection} offset {decOffset} size {dataSize}");
                 }
                 else
                 {
-                    if (absoluteOffsetBytesU > (ulong)input.Length || absoluteOffsetBytesU + (ulong)dataSize > (ulong)input.Length)
-                    {
-                        Console.Error.WriteLine($"[WARN] attempted file read outside bounds: offset={absoluteOffsetBytesU}, size={dataSize}");
-                        break;
-                    }
-
-                    if (absoluteOffsetBytesU > long.MaxValue)
-                    {
-                        Console.Error.WriteLine("[WARN] computed absolute offset too large for Seek.");
-                        break;
-                    }
-
-                    var absoluteOffsetBytes = (long)absoluteOffsetBytesU;
                     input.Seek(absoluteOffsetBytes, SeekOrigin.Begin);
 
                     var read = 0;
@@ -283,7 +369,7 @@ public class Rp6Processor
 
                     Debug.WriteLine($"[INFO] Read part {p} from file offset {absoluteOffsetBytes} size {dataSize}");
                 }
-
+                
                 fileParts.Add(part);
                 currentResource++;
             } // end parts loop
@@ -299,6 +385,7 @@ public class Rp6Processor
                 LogicalIndex = i,
                 BaseName = baseName,
                 TypeName = typeName,
+                isDyingLight1 = _isDyingLight1,
                 FileType = filetype,
                 Parts = fileParts,
                 OutputDir = resourceOutputDir
