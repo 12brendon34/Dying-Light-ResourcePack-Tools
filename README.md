@@ -12,6 +12,7 @@ It unpacks `.rpack` resource packs and exports the supported file formats.
 | -------------------------- | -------- | ---- | ---- | ---------- |
 | **Dying Light: The Beast** | ✓        | P    | ✓    | ✓          |
 | **Dying Light 2**          | ✓        | -    | ✓    | ✓          |
+| **Dying Light: Bad Blood** | ✓        | -    | ✓    | ✓          |
 | **Dying Light**            | ✓        | -    | ✓    | ✓          |
 
 Notes:
