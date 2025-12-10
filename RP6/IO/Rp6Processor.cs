@@ -65,6 +65,7 @@ public class Rp6Processor
         var dl1Valid = 0;
         var dl2Valid = 0;
 
+        //pretty much hopes that if an offset * 16 exceeds the total size of the file (works sometimes)
         foreach (var dt in definedTypes)
         {
             entries++;
@@ -86,10 +87,6 @@ public class Rp6Processor
             //else overflow, dl2 invalid for this entry
         }
 
-        // No Results, Assume DL1
-        if (dl1Valid == 0 && dl2Valid == 0)
-            return true;
-
         //DL2 valid but DL1 not, DL2 wins
         if (dl2Valid == entries && dl1Valid != entries)
             return false;
@@ -97,9 +94,28 @@ public class Rp6Processor
         //DL1 Valid not DL2, DL1 Wins
         if (dl1Valid == entries && dl2Valid != entries)
             return true;
+        
+        
+        //tie breaker
+        
+        
+        //DL1 "Tends" to have the data sequentially, I check if the offset + size = the next offset
+        //if so, it's prob dl1
+        //DL2 has offset * 16, so this logic fails in that case
+        
+        var sorted = definedTypes.OrderBy(d => d.DataFileOffset).ToArray();
+        var matches = 0;
+        var pairs = 0;
 
-        //if "both" are valid, assume DL2
-        return false;
+        for (var i = 0; i < sorted.Length - 1; i++)
+        {
+            pairs++;
+            if (sorted[i].DataFileOffset + sorted[i].DataByteSize == sorted[i + 1].DataFileOffset)
+                matches++;
+        }
+
+        var failures = pairs - matches;
+        return matches > failures;
     }
     
     private static List<byte[]?> DecompressDefinedTypes(Stream input, ResourceTypeHeader[] definedTypes, long fileLength)
