@@ -49,16 +49,32 @@ public class Rp6Processor
         var namesBuffer = Encoding.ASCII.GetString(namesBufBytes);
 
         // determine DL1 layout once and store it on the instance
-        _isDyingLight1 = DetermineChromeVersion(definedTypes, _stream.Length);
+        //_isDyingLight1 = DetermineChromeVersion(definedTypes, _stream.Length);
+        _isDyingLight1 = DetermineChromeVersionAlt(logHeaders);
         
         var decompressedSections = DecompressDefinedTypes(_stream, definedTypes, _stream.Length);
         var resources = ExtractLogicalResources(_stream, physEntries, logHeaders, namesBuffer, namesIndices, definedTypes, decompressedSections, outputRoot);
         return resources;
     }
 
+    //determine based on content removed
+    private static bool DetermineChromeVersionAlt(LogicalResourceEntryHeader[] logHeaders)
+    {
+        foreach (var logHeader in logHeaders)
+        {
+            var filetype = (EResType.Type)(logHeader.Bitfields >> 16 & 0xFFu);
+            if (filetype == EResType.Type.BuilderInformation) //DL2 no longer stores the BuilderInformation stuff
+                return true;
+        }
+        return false;
+    }
+
+    //I'm going to kill myself, this works tho, but right after I wrote it, I had a better idea
+    /*
     //If DL1 or DL2/TB
     private static bool DetermineChromeVersion(ResourceTypeHeader[] definedTypes, long fileLength)
     {
+
         var entrySize = Marshal.SizeOf<ResourceEntryHeader>();
 
         var entries = 0;
@@ -117,6 +133,7 @@ public class Rp6Processor
         var failures = pairs - matches;
         return matches > failures;
     }
+    */
     
     private static List<byte[]?> DecompressDefinedTypes(Stream input, ResourceTypeHeader[] definedTypes, long fileLength)
     {
