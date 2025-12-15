@@ -20,7 +20,7 @@ static class ResourceWriter
         { (int)EResType.Type.Texture, WriteTexture },
         { (int)EResType.Type.Mesh, WriteMesh },
         { (int)EResType.Type.Animation, WriteAnimation },
-        //{ (int)ResourceTypeInfo.Fx, WriteFx }, //removed
+        { (int)EResType.Type.Fx, WriteFx },
         { (int)EResType.Type.BuilderInformation, WriteBuilderInformation }
         // add more mappings here
     };
@@ -70,6 +70,47 @@ static class ResourceWriter
 
         File.WriteAllBytes(outputFile, part);
     }
+
+    private static void WriteFx(ResourceInfo info)
+    {
+        switch (info.Parts.Count)
+        {
+            case 0:
+                Console.Error.WriteLine($"[WARN] FX {info.BaseName} contains no parts.");
+                return;
+            case > 1:
+                Console.Error.WriteLine($"[WARN] FX {info.BaseName} contains unexpected parts.");
+                break;
+        }
+
+        var data = info.Parts[0];
+        var offset = 0;
+
+        while (offset < data.Length - 2)
+        {
+            var nameEnd = Array.IndexOf(data, (byte)0x00, offset);
+            var name = System.Text.Encoding.ASCII.GetString(data, offset, nameEnd - offset);
+            offset = nameEnd + 1; //null term
+
+            //eof usually
+            if (name == string.Empty)
+                continue;
+
+            //pretty sure this corresponds to the FX Type
+            var enumByte = data[offset];
+            //Console.WriteLine($"0x{enumByte:X2}");
+            offset += 1;
+
+            var contentEnd = Array.IndexOf(data, (byte)0x00, offset);
+            var content = System.Text.Encoding.ASCII.GetString(data, offset, contentEnd - offset);
+            offset = contentEnd + 1; //null term
+
+            var outName = name + ".fx";
+            var outputFile = Path.Combine(info.OutputDir, outName);
+            File.WriteAllText(outputFile, content);
+        }
+    }
+
     private static void WriteTexture(ResourceInfo info)
     {
         if (info.Parts.Count < 2)
@@ -90,10 +131,10 @@ static class ResourceWriter
         }
         else
         {
-            textureHeader = reader.ReadStruct<RTextureInfo>(); 
-            format = textureHeader.GetFormat();  
+            textureHeader = reader.ReadStruct<RTextureInfo>();
+            format = textureHeader.GetFormat();
         }
-        
+
         var infoFmt = ResourceTypeInfo.FormatInfo.Get(format);
         uint pitchOrLinearSize;
 
@@ -205,7 +246,7 @@ static class ResourceWriter
         using var stream = new MemoryStream();
         //using var output = File.OpenWrite(outputFile);
         using var writer = new BinaryWriter(stream);
-        
+
         // write magic
         writer.Write(DDS_MAGIC);
 
@@ -257,10 +298,10 @@ static class ResourceWriter
         if (info.BaseName.EndsWith(".png", StringComparison.OrdinalIgnoreCase) && Options.Current.EnablePngFixup)
         {
             stream.Position = 0;
-            
+
             var ddsDecoder = new DdsDecoder();
             var texture = ddsDecoder.DecodeTexture(Configuration.Default, stream);
-            
+
             //not going to mess with other formats like cubemap
             if (texture is FlatTexture flatTexture)
             {
@@ -272,7 +313,7 @@ static class ResourceWriter
                     return;
                 }
             }
-            
+
             //fall through if not handled
         }
 
@@ -298,7 +339,7 @@ static class ResourceWriter
             Console.WriteLine($"[ERROR] Mesh {info.BaseName} does not have 5 parts. Unhandled for now");
             return;
         }
-        
+
         //modifies part0 to change "pointers" (starts at 1) to "offsets" (starts at 0)
         //this would usually be used in engine to convert the raw disk data into functional pointers the engine can use natively instead of reading everything individually
         var part0 = info.Parts[0];
@@ -338,11 +379,11 @@ static class ResourceWriter
         using var ms0 = new MemoryStream(outBuf);
         using var ms3 = new MemoryStream(info.Parts[3]);
         using var ms4 = new MemoryStream(info.Parts[4]);
-        
+
         using var reader0 = new BinaryReader(ms0);
         using var reader3 = new BinaryReader(ms3);
         using var reader4 = new BinaryReader(ms4);
-        
+
         var mesh = reader0.ReadStruct<MeshFileInFile>();
 
         //read surface id's
@@ -352,7 +393,7 @@ static class ResourceWriter
         {
             surfaceIds[i] = (SurfaceId)reader0.ReadUInt32();
         }
-        
+
         //read MeshMaterial
         reader0.BaseStream.Position = (long)mesh.m_MaterialsDatabase;
         var mshMaterial = reader0.ReadStruct<MeshMaterial>();
@@ -360,7 +401,7 @@ static class ResourceWriter
         //read material slots
         reader0.BaseStream.Position = (long)mshMaterial.m_MaterialSlot;
         var materialSlots = reader0.ReadStructArray<MaterialSlot>(mshMaterial.m_MaterialCount);
-        
+
         //read material names
         var mats = new List<string>();
         foreach (var slot in materialSlots)
@@ -370,17 +411,17 @@ static class ResourceWriter
             var matName = reader0.ReadTerminatedString();
             mats.Add(matName);
         }
-        
+
         //read nodes
         reader0.BaseStream.Position = (long)mesh.m_Nodes;
         var nodes = reader0.ReadStructArray<MeshEntityInFile>((int)mesh.m_NodesCount);
-        
+
         var tree = new List<MshTree>();
         foreach (var n in nodes)
         {
             reader0.BaseStream.Position = (long)n.m_Name;
             var nodeName = reader0.ReadTerminatedString();
-            
+
             var mshTree = new MshTree
             {
                 Node = new MshNode
@@ -394,38 +435,38 @@ static class ResourceWriter
                     Bounds = n.m_Bounds,
                     Children = CountDescendants(n.m_NodeIdx, nodes) // total descendants
                 },
-                
+
                 Mesh = []
             };
-            
+
             if (n.m_NodeFormat == 0)
             {
                 tree.Add(mshTree);
                 continue;
             }
-            
+
             //Read mesh formats
             reader0.BaseStream.Position = (long)n.m_NodeFormat;
             var fmt = reader0.ReadStructArray<NodeFormat>(n.m_LodsCount);
-            
+
             foreach (var f in fmt)
             {
                 reader0.BaseStream.Position = (long)f.m_MeshIndexCount;
                 var indexCountPerSurface = reader0.ReadStructArray<uint>(f.m_ObjectCount_A);
                 var indexCount = (int)indexCountPerSurface.Sum(i => i);
                 var indexData = reader4.ReadStructArray<ushort>(indexCount);
-                
+
                 var mFmt = new MeshFmt
                 {
                     NumVertices = f.m_VertexCount,
                     NumIndices = (uint)indexCount,
-                    
+
                     //should eventually be data.SurfaceTypes.Length or whatever
                     NumSurfaces = f.m_ObjectCount_B, //IDK m_ObjectCount_B tends to == m_ObjectCount_A. maybe one is NumSurfaces and the other is indexCount.Length or smt
                     Indices = indexData,
                     Surfaces = new SurfaceDesc[f.m_ObjectCount_B]
                 };
-                
+
                 uint currentOffset = 0;
                 for (var i = 0; i < f.m_ObjectCount_B; i++)
                 {
@@ -448,7 +489,7 @@ static class ResourceWriter
                     currentOffset += count;
                 }
 
-                
+
                 float[] pos, tan, bitan, nrm, uv0, uv1;
                 switch (f.m_VertexLayoutID)
                 {
@@ -456,40 +497,40 @@ static class ResourceWriter
                         var vertices = reader3.ReadStructArray<DlVertex32>((int)f.m_VertexCount);
                         (pos, tan, bitan, nrm, uv0, uv1) = DlVertex32.ExtractArrays(vertices, (int)f.m_VertexCount);
                         break;
-                    
+
                     //0 (DlVertex16)
                     //8 DlVertex80
                     default:
-                        Console.WriteLine($"[ERROR] Vertex layout { f.m_VertexLayoutID } not supported in mesh {info.BaseName}");
+                        Console.WriteLine($"[ERROR] Vertex layout {f.m_VertexLayoutID} not supported in mesh {info.BaseName}");
                         return;
-                        //throw new Exception($"Vertex layout { f.m_VertexLayoutID } not supported in mesh {info.BaseName}");
+                    //throw new Exception($"Vertex layout { f.m_VertexLayoutID } not supported in mesh {info.BaseName}");
                 }
-                
+
                 // Convert the float[] data to byte[] before assigning, if mesh expects byte arrays
                 mFmt.Vxyz[0].Data = new byte[pos.Length * sizeof(float)];
                 Buffer.BlockCopy(pos, 0, mFmt.Vxyz[0].Data, 0, mFmt.Vxyz[0].Data.Length);
-                
+
                 mFmt.VNormal[0] = new byte[nrm.Length * sizeof(float)];
                 Buffer.BlockCopy(nrm, 0, mFmt.VNormal[0], 0, mFmt.VNormal[0].Length);
-                
+
                 mFmt.VTangent[0] = new byte[tan.Length * sizeof(float)];
                 Buffer.BlockCopy(tan, 0, mFmt.VTangent[0], 0, mFmt.VTangent[0].Length);
-                
+
                 mFmt.VBitangent[0] = new byte[bitan.Length * sizeof(float)];
                 Buffer.BlockCopy(bitan, 0, mFmt.VBitangent[0], 0, mFmt.VBitangent[0].Length);
-                
+
                 mFmt.VUv[0] = new byte[uv0.Length * sizeof(float)];
                 Buffer.BlockCopy(uv0, 0, mFmt.VUv[0], 0, mFmt.VUv[0].Length);
-                
+
                 mFmt.VUv[1] = new byte[uv1.Length * sizeof(float)];
                 Buffer.BlockCopy(uv1, 0, mFmt.VUv[1], 0, mFmt.VUv[1].Length);
-                
+
                 mshTree.Mesh.Add(mFmt);
             }
 
             tree.Add(mshTree);
         }
-        
+
         //create Msh Data for writer
         var data = new MshData
         {
@@ -503,7 +544,7 @@ static class ResourceWriter
                 NumSurfaceTypes = mshMaterial.m_SurfaceCount
             }
         };
-        
+
         //pass to my mesh writer and write to file
         var outName = info.BaseName + ".msh";
         var outputFile = Path.Combine(info.OutputDir, outName);
