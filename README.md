@@ -8,15 +8,15 @@ It unpacks `.rpack` resource packs and exports the supported file formats.
 
 ## Supported games & formats
 
-| Game                                        | Textures | Mesh | ANM2 | Raw binary |
-| ------------------------------------------- | -------- | ---- | ---- | ---------- |
-| **Dying Light: The Beast**                  | ✓        | P    | ✓    | ✓          |
-| **Dying Light 2**                           | ✓        | -    | ✓    | ✓          |
-| **Dying Light: Bad Blood**                  | ✓        | -    | ✓    | ✓          |
-| **Dying Light**                             | ✓        | -    | ✓    | ✓          |
-| **Dead Island: Riptide Definitive Edition** | ✓        | -    | ✓    | ✓          |
-| **Dead Island: Definitive Edition**         | ✓        | -    | ✓    | ✓          |
-| **FIM Speedway Grand Prix 15**              | ✓        | -    | ✓    | ✓          |
+| Game                                        | Textures | Mesh | ANM2 | Raw binary | FX |
+| ------------------------------------------- | -------- | ---- | ---- | ---------- | -- |
+| **Dying Light: The Beast**                  | ✓        | P    | ✓    | ✓          | NA |
+| **Dying Light 2**                           | ✓        | -    | ✓    | ✓          | NA |
+| **Dying Light: Bad Blood**                  | ✓        | -    | ✓    | ✓          | ✓  |
+| **Dying Light**                             | ✓        | -    | ✓    | ✓          | ✓  |
+| **Dead Island: Riptide Definitive Edition** | ✓        | -    | ✓    | ✓          | ✓  |
+| **Dead Island: Definitive Edition**         | ✓        | -    | ✓    | ✓          | ✓  |
+| **FIM Speedway Grand Prix 15**              | ✓        | -    | ✓    | ✓          | ✓  |
 
 
 Notes:
