@@ -317,8 +317,36 @@ static class ResourceWriter
             //fall through if not handled
         }
 
+        //convert format maybe
+        /*
+        if (info.BaseName.EndsWith(".raw", StringComparison.OrdinalIgnoreCase))
+        {
+
+        }
+        */
+
+        /*
+         * cases:
+         * name.png
+         * name.dds
+         * name.raw
+         * name
+         *
+         * name -> name.dds
+         * name.dds ignored
+         * name.png ignored (already handled above, will not execute)
+         * name.raw -> name.raw.dds (not sure what the original raw format is that techland uses, so I'll leave it as dds and keep the raw extention), this should prob be implemented like pngs at some point
+         */
+        
+        //append dds when needed
+        if (!info.BaseName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
+        {
+            outputFile = Path.Combine(info.OutputDir, info.BaseName);
+            outputFile += ".dds";
+        }
+        
         //write dds
-        outputFile = Path.Combine(info.OutputDir, info.BaseName);
+        //outputFile = Path.Combine(info.OutputDir, info.BaseName);
         using var fileStream = File.OpenWrite(outputFile);
         stream.Position = 0;
         stream.CopyTo(fileStream);
