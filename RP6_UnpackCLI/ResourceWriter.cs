@@ -62,7 +62,7 @@ static class ResourceWriter
     private static void WriteAnimation(ResourceInfo info)
     {
         if (info.Parts.Count > 1)
-            Console.Error.WriteLine($"[WARN] Animation {info.BaseName} contains unexpected parts. Skipping data.");
+            Console.Error.WriteLine($"[WARN] Animation {info.BaseName} contains unexpected parts.");
 
         var part = info.Parts[0];
         var outName = info.BaseName + ".anm2";
@@ -73,16 +73,9 @@ static class ResourceWriter
 
     private static void WriteFx(ResourceInfo info)
     {
-        switch (info.Parts.Count)
-        {
-            case 0:
-                Console.Error.WriteLine($"[WARN] FX {info.BaseName} contains no parts.");
-                return;
-            case > 1:
-                Console.Error.WriteLine($"[WARN] FX {info.BaseName} contains unexpected parts.");
-                break;
-        }
-
+        if (info.Parts.Count > 1)
+            Console.Error.WriteLine($"[WARN] FX {info.BaseName} contains unexpected parts.");
+        
         var data = info.Parts[0];
         var offset = 0;
 
@@ -113,43 +106,7 @@ static class ResourceWriter
 
     private static void WriteTexture(ResourceInfo info)
     {
-        if (info.Parts.Count < 2)
-        {
-            Console.Error.WriteLine($"[WARN] Texture {info.BaseName} does not have enough parts.");
-            return;
-        }
-
-        using var reader = new BinaryReader(new MemoryStream(info.Parts[0]));
-        RTextureInfo textureHeader;
-        ResourceTypeInfo.TextureFormat format;
-        if (info.isDyingLight1)
-        {
-            //convert DL1 format to DL2, so I don't need to rewrite everything
-            var oldTextureHeader = reader.ReadStruct<SPackTextureHeader>();
-            textureHeader = oldTextureHeader.ToRTextureInfo();
-            format = oldTextureHeader.GetFormat();
-        }
-        else
-        {
-            textureHeader = reader.ReadStruct<RTextureInfo>();
-            format = textureHeader.GetFormat();
-        }
-
-        var infoFmt = ResourceTypeInfo.FormatInfo.Get(format);
-        uint pitchOrLinearSize;
-
-        if (infoFmt.IsBlockCompressed)
-        {
-            // block count = ceil(width/4) * ceil(height/4)
-            var blockWidth = (textureHeader.Width + 3) / 4;
-            var blockHeight = (textureHeader.Height + 3) / 4;
-            pitchOrLinearSize = (uint)(blockWidth * blockHeight * infoFmt.BlockSizeBytes);
-        }
-        else
-        {
-            pitchOrLinearSize = (uint)(textureHeader.Width * infoFmt.BytesPerPixel + 3 & ~3);
-        }
-
+        // ReSharper disable InconsistentNaming
         // DDS constants
         const uint DDS_MAGIC = 0x20534444; // "DDS "
         const uint DDS_HEADER_SIZE = 124;
@@ -165,38 +122,7 @@ static class ResourceWriter
         const uint DDSD_MIPMAPCOUNT = 0x20000;
         const uint DDSD_LINEARSIZE = 0x80000;
         //const uint DDSD_DEPTH = 0x800000;
-
-        var ddsFlags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT;
-        if (infoFmt.IsBlockCompressed)
-            ddsFlags |= DDSD_LINEARSIZE;
-        else
-            ddsFlags |= DDSD_PITCH;
-
-        if (textureHeader.MipLevels > 1)
-            ddsFlags |= DDSD_MIPMAPCOUNT;
-
-        // Clamp mip levels
-        var mipCount = textureHeader.MipLevels == 0 ? 1u : textureHeader.MipLevels;
-
-        var header = new DDS.DDS_HEADER
-        {
-            Size = DDS_HEADER_SIZE,
-            Flags = ddsFlags,
-            Height = textureHeader.Height,
-            Width = textureHeader.Width,
-            PitchOrLinearSize = pitchOrLinearSize,
-            Depth = textureHeader.Depth,
-            MipMapCount = mipCount,
-            Reserved1 = new uint[11],
-            PixelFormat = DDS.GetPixelFormat(format),
-            Caps = DDSCAPS_TEXTURE | (textureHeader.MipLevels > 1 ? DDSCAPS_MIPMAP | DDSCAPS_COMPLEX : 0),
-            Caps2 = 0,
-            Caps3 = 0,
-            Caps4 = 0,
-            Reserved2 = 0
-        };
-
-        // ReSharper disable InconsistentNaming
+        
         const uint DDSCAPS2_VOLUME = 0x00200000;
         const uint DDSCAPS2_CUBEMAP = 0x00000200;
         const uint DDSCAPS2_CUBEMAP_POSITIVEX = 0x00000400;
@@ -209,44 +135,79 @@ static class ResourceWriter
                                                DDSCAPS2_CUBEMAP_POSITIVEY | DDSCAPS2_CUBEMAP_NEGATIVEY |
                                                DDSCAPS2_CUBEMAP_POSITIVEZ | DDSCAPS2_CUBEMAP_NEGATIVEZ;
         // ReSharper restore InconsistentNaming
+        
 
-        switch (textureHeader.TexType)
+        if (info.Parts.Count < 2)
         {
-            case 1:
-                header.Caps2 = DDSCAPS2_CUBEMAP | DDSCAPS2_CUBEMAP_ALLFACES;
-                break;
-            case 2:
-                header.Caps2 = DDSCAPS2_VOLUME;
-                break;
+            Console.Error.WriteLine($"[WARN] Texture {info.BaseName} does not have enough parts.");
+            return;
         }
 
-        // extended DX10 header if needed
-        var dx10Header = new DDS.DDS_HEADER_DX10
+        using var reader = new BinaryReader(new MemoryStream(info.Parts[0]));
+        var format = new ResourceTypeInfo.TextureFormat();
+        
+        if (info.isDyingLight1)
+            format.FromCE6(reader);
+        else
+            format.FromCEngine(reader);
+        
+        var ddsFlags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT;
+        if (format.FmtInfo.IsBlockCompressed)
+            ddsFlags |= DDSD_LINEARSIZE;
+        else
+            ddsFlags |= DDSD_PITCH;
+        
+        if (format.MipLevels > 1)
+            ddsFlags |= DDSD_MIPMAPCOUNT;
+        
+        var header = new DDS.DDS_HEADER
         {
-            DxgiFormat = ResourceTypeInfo.GetDXGIFormat(format),
+            Size = DDS_HEADER_SIZE,
+            Flags = ddsFlags,
+            Height = format.Height,
+            Width = format.Width,
+            PitchOrLinearSize = format.FmtInfo.pitchOrLinearSize,
+            Depth = format.Depth,
+            MipMapCount = format.MipLevels,
+            Reserved1 = new uint[11],
+            PixelFormat = format.FmtInfo.PixelFormat,
+            Caps = DDSCAPS_TEXTURE | (format.MipLevels > 1 ? DDSCAPS_MIPMAP | DDSCAPS_COMPLEX : 0),
+            Caps2 = 0,
+            Caps3 = 0,
+            Caps4 = 0,
+            Reserved2 = 0
+        };
+        
+        var headerDx10 = new DDS.DDS_HEADER_DX10
+        {
+            DxgiFormat = format.FmtInfo.DxgiFormat,
             ResourceDimension = DDS.D3D10_RESOURCE_DIMENSION.Texture2D,
             MiscFlag = 0,
             ArraySize = 1,
             MiscFlags2 = 0
         };
-
+        
+        
         if (header.PixelFormat.FourCC == DDS.MakeFourCC("DX10"))
         {
-            if (dx10Header.DxgiFormat == DDS.DXGI_FORMAT.DXGI_FORMAT_UNKNOWN)
+            if (headerDx10.DxgiFormat == DDS.DXGI_FORMAT.DXGI_FORMAT_UNKNOWN)
             {
-                Console.Error.WriteLine($"[WARN] Texture {info.BaseName}, with textureHeader.Format of {format} does not have matching DxgiFormat.");
+                Console.Error.WriteLine($"[WARN] Texture {info.BaseName}, does not have matching DxgiFormat.");
                 return;
             }
         }
         else
         {
-            Debug.WriteLine($"[INFO] Texture {info.BaseName}, with textureHeader.Format of {format} supports only DX9.");
+            if (format.FmtInfo.PixelFormat.Size == 0)
+            {
+                Console.Error.WriteLine($"[WARN] Texture {info.BaseName}, does not have fallback DX9 Format of type {format.FmtInfo.Dx9Format}");
+                return;
+            }
         }
-
+        
         using var stream = new MemoryStream();
-        //using var output = File.OpenWrite(outputFile);
         using var writer = new BinaryWriter(stream);
-
+        
         // write magic
         writer.Write(DDS_MAGIC);
 
@@ -278,27 +239,27 @@ static class ResourceWriter
         writer.Write(header.Caps3);
         writer.Write(header.Caps4);
         writer.Write(header.Reserved2);
-
-        // optional DX10
+        
+        // write Dx10 header
         if (header.PixelFormat.FourCC == DDS.MakeFourCC("DX10"))
         {
-            writer.Write((uint)dx10Header.DxgiFormat);
-            writer.Write((uint)dx10Header.ResourceDimension);
-            writer.Write(dx10Header.MiscFlag);
-            writer.Write(dx10Header.ArraySize);
-            writer.Write(dx10Header.MiscFlags2);
+            writer.Write((uint)headerDx10.DxgiFormat);
+            writer.Write((uint)headerDx10.ResourceDimension);
+            writer.Write(headerDx10.MiscFlag);
+            writer.Write(headerDx10.ArraySize);
+            writer.Write(headerDx10.MiscFlags2);
         }
-
+        
         // write texture data
         writer.Write(info.Parts[1]);
         writer.Flush();
-
+        //prep copy and such
+        stream.Position = 0;
+        
         //write png
         var outputFile = Path.Combine(info.OutputDir, info.BaseName);
         if (info.BaseName.EndsWith(".png", StringComparison.OrdinalIgnoreCase) && Options.Current.EnablePngFixup)
         {
-            stream.Position = 0;
-
             var ddsDecoder = new DdsDecoder();
             var texture = ddsDecoder.DecodeTexture(Configuration.Default, stream);
 
@@ -317,28 +278,11 @@ static class ResourceWriter
             //fall through if not handled
         }
 
-        //convert format maybe
-        /*
-        if (info.BaseName.EndsWith(".raw", StringComparison.OrdinalIgnoreCase))
-        {
-
-        }
-        */
-
-        /*
-         * cases:
-         * name.png
-         * name.dds
-         * name.raw
-         * name
-         *
-         * name -> name.dds
-         * name.dds ignored
-         * name.png ignored (already handled above, will not execute)
-         * name.raw -> name.raw.dds (not sure what the original raw format is that techland uses, so I'll leave it as dds and keep the raw extention), this should prob be implemented like pngs at some point
-         */
+        // deal with .raw at some point
+        //if (info.BaseName.EndsWith(".raw", StringComparison.OrdinalIgnoreCase))
         
-        //append dds when needed
+        
+        //append dds if needed
         if (!info.BaseName.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
         {
             outputFile = Path.Combine(info.OutputDir, info.BaseName);
@@ -346,12 +290,23 @@ static class ResourceWriter
         }
         
         //write dds
-        //outputFile = Path.Combine(info.OutputDir, info.BaseName);
         using var fileStream = File.OpenWrite(outputFile);
-        stream.Position = 0;
         stream.CopyTo(fileStream);
+        
+        /*
 
-        //Debug.WriteLine($"[OUT] Wrote {outputFile} ({new FileInfo(outputFile).Length} bytes)");
+        //when I get around to it, I should look at
+        //https://github.com/microsoft/DirectXTex/blob/main/DirectXTex/DirectXTexDDS.cpp
+        switch (textureHeader.TexType)
+        {
+            case 1:
+                header.Caps2 = DDSCAPS2_CUBEMAP | DDSCAPS2_CUBEMAP_ALLFACES;
+                break;
+            case 2:
+                header.Caps2 = DDSCAPS2_VOLUME;
+                break;
+        }
+        */
     }
 
     private static void WriteMesh(ResourceInfo info)

@@ -48,9 +48,7 @@ public class Rp6Processor
 
         var namesBuffer = Encoding.ASCII.GetString(namesBufBytes);
 
-        // determine DL1 layout once and store it on the instance
-        //_isDyingLight1 = DetermineChromeVersion(definedTypes, _stream.Length);
-        _isDyingLight1 = DetermineChromeVersionAlt(logHeaders);
+        _isDyingLight1 = DetermineChromeVersion(logHeaders);
         
         var decompressedSections = DecompressDefinedTypes(_stream, definedTypes, _stream.Length);
         var resources = ExtractLogicalResources(_stream, physEntries, logHeaders, namesBuffer, namesIndices, definedTypes, decompressedSections, outputRoot);
@@ -58,7 +56,7 @@ public class Rp6Processor
     }
 
     //determine based on content removed
-    private static bool DetermineChromeVersionAlt(LogicalResourceEntryHeader[] logHeaders)
+    private static bool DetermineChromeVersion(LogicalResourceEntryHeader[] logHeaders)
     {
         foreach (var logHeader in logHeaders)
         {
@@ -68,72 +66,6 @@ public class Rp6Processor
         }
         return false;
     }
-
-    //I'm going to kill myself, this works tho, but right after I wrote it, I had a better idea
-    /*
-    //If DL1 or DL2/TB
-    private static bool DetermineChromeVersion(ResourceTypeHeader[] definedTypes, long fileLength)
-    {
-
-        var entrySize = Marshal.SizeOf<ResourceEntryHeader>();
-
-        var entries = 0;
-        var dl1Valid = 0;
-        var dl2Valid = 0;
-
-        //pretty much hopes that if an offset * 16 exceeds the total size of the file (works sometimes)
-        foreach (var dt in definedTypes)
-        {
-            entries++;
-            long raw = dt.DataFileOffset;
-
-            // DL1 raw is a byte offset
-            if (raw < fileLength)
-                dl1Valid++;
-
-            // DL2 raw is an index, byte offset = raw * entrySize
-            // check overflow before multiplying
-            if (raw > long.MaxValue / entrySize)
-                continue;
-            
-            var dl2Offset = raw * entrySize;
-            if (dl2Offset < fileLength)
-                dl2Valid++;
-            
-            //else overflow, dl2 invalid for this entry
-        }
-
-        //DL2 valid but DL1 not, DL2 wins
-        if (dl2Valid == entries && dl1Valid != entries)
-            return false;
-
-        //DL1 Valid not DL2, DL1 Wins
-        if (dl1Valid == entries && dl2Valid != entries)
-            return true;
-        
-        
-        //tie breaker
-        
-        
-        //DL1 "Tends" to have the data sequentially, I check if the offset + size = the next offset
-        //if so, it's prob dl1
-        //DL2 has offset * 16, so this logic fails in that case
-        
-        var sorted = definedTypes.OrderBy(d => d.DataFileOffset).ToArray();
-        var matches = 0;
-        var pairs = 0;
-
-        for (var i = 0; i < sorted.Length - 1; i++)
-        {
-            pairs++;
-            if (sorted[i].DataFileOffset + sorted[i].DataByteSize == sorted[i + 1].DataFileOffset)
-                matches++;
-        }
-
-        var failures = pairs - matches;
-        return matches > failures;
-    }
-    */
     
     private static List<byte[]?> DecompressDefinedTypes(Stream input, ResourceTypeHeader[] definedTypes, long fileLength)
     {

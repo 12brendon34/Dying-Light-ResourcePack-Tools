@@ -144,8 +144,7 @@ public static class DDS
         DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE = 190,
         DXGI_FORMAT_FORCE_UINT = 0xffffffff
     }
-
-    // Methods
+    
     public static uint MakeFourCC(string fourcc)
     {
         if (string.IsNullOrEmpty(fourcc) || fourcc.Length != 4)
@@ -154,69 +153,8 @@ public static class DDS
         return (uint)(fourcc[0] | fourcc[1] << 8 | fourcc[2] << 16 | fourcc[3] << 24);
     }
 
-    /// <summary>
-    ///     Gets the DDS_PIXELFORMAT definition for ResourceTypeInfo.EFormat.
-    /// </summary>
-    public static DDS_PIXELFORMAT GetPixelFormat(ResourceTypeInfo.TextureFormat textureFormat)
-    {
-        const uint DDS_PIXELFORMAT_SIZE = 32;
 
-        var pixelFormat = new DDS_PIXELFORMAT
-        {
-            Size = DDS_PIXELFORMAT_SIZE,
-            Flags = (uint)PixelFormatFlags.FourCC,
-            FourCC = MakeFourCC("DX10")
-        };
-
-        // ReSharper disable SwitchStatementMissingSomeEnumCasesNoDefault
-        switch (textureFormat)
-        {
-            // DX9
-            case ResourceTypeInfo.TextureFormat.R5G6B5:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgb, 16, 0xF800, 0x07E0, 0x001F, 0);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.R8G8B8:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgb, 24, 0x00FF0000, 0x0000FF00, 0x000000FF, 0);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.B8G8R8:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgb, 24, 0x000000FF, 0x0000FF00, 0x00FF0000, 0);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.A8R8G8B8:
-            case ResourceTypeInfo.TextureFormat.A8R8G8B8_GAMMA:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgba, 32, 0x00FF0000, 0x0000FF00, 0x000000FF,
-                    0xFF000000);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.X8B8G8R8:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgb, 32, 0x0000FF00, 0x00FF0000, 0xFF000000, 0);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.B8G8R8A8:
-            case ResourceTypeInfo.TextureFormat.B8G8R8X8:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgba, 32, 0x000000FF, 0x0000FF00, 0x00FF0000,0xFF000000);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.X8R8G8B8:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Rgb, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0);
-                break;
-
-            case ResourceTypeInfo.TextureFormat.D24FS8:
-                pixelFormat = CreateBitmaskFormat(PixelFormatFlags.Luminance, 32, 0xFFFFFF00, 0, 0, 0x000000FF);
-                break;
-
-            //TODO Implement DL1 DX9 Fallback ALSO
-            
-            
-            // All other formats default to DX10 FourCC
-        }
-
-        return pixelFormat;
-    }
-
-    private static DDS_PIXELFORMAT CreateBitmaskFormat(PixelFormatFlags flags, uint bitCount, uint rMask, uint gMask, uint bMask, uint aMask)
+    public static DDS_PIXELFORMAT CreateBitmaskFormat(PixelFormatFlags flags, uint bitCount, uint rMask, uint gMask, uint bMask, uint aMask)
     {
         return new DDS_PIXELFORMAT
         {
@@ -231,7 +169,6 @@ public static class DDS
         };
     }
 
-    // Structs
     public struct DDS_HEADER
     {
         public uint Size;
@@ -271,9 +208,8 @@ public static class DDS
         public uint MiscFlags2;
     }
 
-    // Enums
     [Flags]
-    internal enum PixelFormatFlags : uint
+    public enum PixelFormatFlags : uint
     {
         AlphaPixels = 0x00000001,
         Alpha = 0x00000002,
