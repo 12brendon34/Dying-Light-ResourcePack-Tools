@@ -477,16 +477,49 @@ static class ResourceWriter
                 switch (f.m_VertexLayoutID)
                 {
                     case 3:
-                        var vertices = reader3.ReadStructArray<DlVertex32>((int)f.m_VertexCount);
-                        (pos, tan, bitan, nrm, uv0, uv1) = DlVertex32.ExtractArrays(vertices, (int)f.m_VertexCount);
-                        break;
+                        {
+                            var vertices = reader3.ReadStructArray<DlVertex32>((int)f.m_VertexCount);
+                            (pos, tan, bitan, nrm, uv0, uv1) = DlVertex32.ExtractArrays(vertices, (int)f.m_VertexCount);
+                            break;
+                        }
 
+                    case 0:
+                        {
+                            var vertices = reader3.ReadStructArray<DlVertex16>((int)f.m_VertexCount);
+                            (pos, tan, bitan, nrm, uv0, uv1) = DlVertex16.ExtractArrays(vertices, (int)f.m_VertexCount);
+                            break;
+                        }
+
+                    case 6:
+                        {
+                            var vertices = reader3.ReadStructArray<DlVertex48>((int)f.m_VertexCount);
+                            (pos, tan, bitan, nrm, uv0, uv1) = DlVertex48.ExtractArrays(vertices, (int)f.m_VertexCount);
+                            break;
+                        }
                     //0 (DlVertex16)
                     //8 DlVertex80
+                    //6 
+
+
                     default:
-                        Console.WriteLine($"[ERROR] Vertex layout {f.m_VertexLayoutID} not supported in mesh {info.BaseName}");
-                        return;
-                    //throw new Exception($"Vertex layout { f.m_VertexLayoutID } not supported in mesh {info.BaseName}");
+                        {
+                            var dumpPath = Path.Combine("dumps", $"{info.BaseName}_layout{f.m_VertexLayoutID}.bin");
+                            Directory.CreateDirectory("dumps");
+
+                            // snapshot the current stream position before reading
+                            var streamPos = reader3.BaseStream.Position;
+                            var byteCount = (int)f.m_VertexCount * 128; // generous upper bound (DlVertex80 = 80 bytes, pad to 128)
+                            var dumpBuf = new byte[Math.Min(byteCount, reader3.BaseStream.Length - streamPos)];
+                            reader3.BaseStream.Position = streamPos;
+                            _ = reader3.Read(dumpBuf, 0, dumpBuf.Length);
+
+                            File.WriteAllBytes(dumpPath, dumpBuf);
+                            Console.WriteLine($"[DUMP] Layout {f.m_VertexLayoutID} | Mesh: {info.BaseName} | Vertices: {f.m_VertexCount} | StreamPos: 0x{streamPos:X} | Dumped {dumpBuf.Length} bytes -> {dumpPath}");
+                            return;
+                        }
+                        //default:
+                        //    Console.WriteLine($"[ERROR] Vertex layout {f.m_VertexLayoutID} not supported in mesh {info.BaseName}");
+                        //    return;
                 }
 
                 // Convert the float[] data to byte[] before assigning, if mesh expects byte arrays
